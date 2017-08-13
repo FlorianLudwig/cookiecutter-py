@@ -1,0 +1,87 @@
+stages:
+  - test
+  - build
+  - dist
+  - container-check
+  - publish
+
+
+cache:
+  untracked: false
+  key: pip-cache
+  paths:
+    - ~/.cache/pip
+
+
+variables:
+  CI_REGISTRY_IMAGE: "IMAGE_NAME"
+
+
+before_script:
+  - mkdir -p ~/.cache/pip && mkdir ~/.pip
+  - echo -e "[global]\ndownload_cache = ~/.cache/pip" > ~/.pip/pip.conf
+  - pip install -e .
+
+
+py.test:
+  stage: test
+  image: python:3.6-alpine
+  script:
+    - pip install -r requirements_dev.txt
+    - py.test --cov rchand test
+
+
+pylint:
+  stage: test
+  image: python:3.6-alpine
+  script:
+    - pip install -r requirements_dev.txt
+    - pylint --errors-only rchand
+
+
+dist:
+  stage: build
+  image: python:3.6-alpine
+  script:
+    - pip install -e .
+    - python setup.py sdist
+    - echo $CI_COMMIT_SHA > git_commit
+  artifacts:
+    name: "rchand-$CI_COMMIT_SHA"
+    paths:
+     - dist/*.tar.gz
+     - git_commit
+
+
+docker:
+  stage: dist
+  image: docker
+  before_script:
+    - mkdir -p ~/.docker
+    - echo "$DOCKER_AUTH_CONFIG" > ~/.docker/config.json
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA} -t $CI_REGISTRY_IMAGE:latest-${CI_COMMIT_REF_NAME} .
+    - docker push $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA}
+    - docker push $CI_REGISTRY_IMAGE:latest-${CI_COMMIT_REF_NAME}
+
+    # make sure it was correctly pushed
+    - docker rmi $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA}
+    - docker pull $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA}
+  dependencies:
+    - dist
+
+
+publish:
+  stage: publish
+  image: docker
+  before_script:
+    - mkdir -p ~/.docker
+    - echo "$DOCKER_AUTH_CONFIG" > ~/.docker/config.json
+  script:
+    - docker pull $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA}
+    - docker tag $CI_REGISTRY_IMAGE:${CI_COMMIT_SHA} $CI_REGISTRY_IMAGE:latest
+    - docker push $CI_REGISTRY_IMAGE:latest
+  when: manual
+  only:
+    - master
+    - tags
